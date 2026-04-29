@@ -15,16 +15,17 @@ try {
 }
 
 // Tìm yt-dlp binary từ nhiều path (Railway/Nix/system)
-let YTDLP_PATH = "yt-dlp";
 const { execSync: _execSync } = require("child_process");
-const possibleYtdlpPaths = [
+// Tìm yt-dlp: ưu tiên ./bin/yt-dlp (tải lúc build), sau đó fallback PATH
+const _ytdlpCandidates = [
+  path.join(__dirname, "..", "bin", "yt-dlp"),
   "yt-dlp",
   "/root/.local/bin/yt-dlp",
   "/usr/local/bin/yt-dlp",
   "/usr/bin/yt-dlp",
-  "/nix/var/nix/profiles/default/bin/yt-dlp",
 ];
-for (const p of possibleYtdlpPaths) {
+let YTDLP_PATH = _ytdlpCandidates[0]; // default ./bin/yt-dlp
+for (const p of _ytdlpCandidates) {
   try {
     _execSync(`${p} --version`, { stdio: "ignore" });
     YTDLP_PATH = p;
