@@ -3,6 +3,7 @@ const axios = require("axios");
 const path = require("path");
 const fs = require("fs");
 const { isHLSUrl, isDASHUrl } = require("./analyzer");
+const YtDlpWrap = require("yt-dlp-wrap").default;
 
 // Dùng ffmpeg từ npm package @ffmpeg-installer/ffmpeg (không cần cài hệ thống)
 let FFMPEG_PATH = "ffmpeg";
@@ -14,25 +15,11 @@ try {
   console.warn("⚠️  @ffmpeg-installer/ffmpeg không tìm thấy, dùng system ffmpeg");
 }
 
-// Tìm yt-dlp binary từ nhiều path (Railway/Nix/system)
-const { execSync: _execSync } = require("child_process");
-// Tìm yt-dlp: ưu tiên ./bin/yt-dlp (tải lúc build), sau đó fallback PATH
-const _ytdlpCandidates = [
-  path.join(__dirname, "..", "bin", "yt-dlp"),
-  "yt-dlp",
-  "/root/.local/bin/yt-dlp",
-  "/usr/local/bin/yt-dlp",
-  "/usr/bin/yt-dlp",
-];
-let YTDLP_PATH = _ytdlpCandidates[0]; // default ./bin/yt-dlp
-for (const p of _ytdlpCandidates) {
-  try {
-    _execSync(`${p} --version`, { stdio: "ignore" });
-    YTDLP_PATH = p;
-    console.log("✅ yt-dlp found at:", p);
-    break;
-  } catch {}
-}
+// Initialise yt-dlp-wrap (downloads the yt-dlp binary automatically on first use)
+const ytDlpWrap = new YtDlpWrap();
+YtDlpWrap.downloadFromGithub().catch((e) =>
+  console.warn("⚠️  yt-dlp-wrap auto-download failed:", e.message),
+);
 
 const HEADERS = {
   "User-Agent":
@@ -123,133 +110,90 @@ async function downloadWithFFmpeg(manifestUrl, referer, res, filename = "video")
 
 // Download with yt-dlp (fallback for social platforms)
 async function downloadWithYtDlp(url, res, filename = "video", quality = "best") {
-  return new Promise((resolve, reject) => {
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="${sanitizeFilename(filename)}.mp4"`,
-    );
-    res.setHeader("Content-Type", "video/mp4");
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="${sanitizeFilename(filename)}.mp4"`,
+  );
+  res.setHeader("Content-Type", "video/mp4");
 
-    // Choose format based on quality preference
-    let format;
-    switch (quality) {
-      case "best":
-        format = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best";
-        break;
-      case "1080p":
-        format = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]";
-        break;
-      case "720p":
-        format = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]";
-        break;
-      case "480p":
-        format = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]";
-        break;
-      case "360p":
-        format = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]";
-        break;
-      default:
-        format = "best[ext=mp4]/best";
-    }
+  // Choose format based on quality preference
+  let format;
+  switch (quality) {
+    case "best":
+      format = "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best";
+      break;
+    case "1080p":
+      format = "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/best[height<=1080]";
+      break;
+    case "720p":
+      format = "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720]";
+      break;
+    case "480p":
+      format = "bestvideo[height<=480][ext=mp4]+bestaudio[ext=m4a]/best[height<=480]";
+      break;
+    case "360p":
+      format = "bestvideo[height<=360][ext=mp4]+bestaudio[ext=m4a]/best[height<=360]";
+      break;
+    default:
+      format = "best[ext=mp4]/best";
+  }
 
-    const args = [
-      url,
-      "-f",
-      format,
-      "--merge-output-format",
-      "mp4",
-      "-o",
-      "-", // output to stdout
-      "--no-playlist",
-      "--user-agent",
-      HEADERS["User-Agent"],
-      "--no-warnings",
-    ];
+  const args = [
+    url,
+    "-f",
+    format,
+    "--merge-output-format",
+    "mp4",
+    "-o",
+    "-", // output to stdout
+    "--no-playlist",
+    "--user-agent",
+    HEADERS["User-Agent"],
+    "--no-warnings",
+  ];
 
-    const ytdlp = spawn(YTDLP_PATH, args, { stdio: ["ignore", "pipe", "pipe"] });
+  const ytDlpStream = ytDlpWrap.execStream(args);
 
-    ytdlp.stdout.pipe(res);
-
-    let stderr = "";
-    ytdlp.stderr.on("data", (data) => {
-      stderr += data.toString();
-    });
-
-    ytdlp.on("close", (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`yt-dlp error (code ${code}): ${stderr.slice(-500)}`));
-    });
-
-    ytdlp.on("error", (err) => {
-      if (err.code === "ENOENT") {
-        reject(new Error("yt-dlp không được cài đặt. Chạy: pip install yt-dlp"));
-      } else {
-        reject(err);
-      }
-    });
-
-    res.on("close", () => {
-      ytdlp.kill("SIGTERM");
-    });
+  await new Promise((resolve, reject) => {
+    ytDlpStream.pipe(res);
+    ytDlpStream.on("error", (err) => reject(new Error(`yt-dlp error: ${err.message}`)));
+    ytDlpStream.on("close", resolve);
+    res.on("close", () => ytDlpStream.destroy());
   });
 }
 
 // Get video info with yt-dlp
 async function getInfoWithYtDlp(url) {
-  return new Promise((resolve, reject) => {
-    const args = [
-      url,
-      "--dump-json",
-      "--no-playlist",
-      "--no-warnings",
-      "--user-agent",
-      HEADERS["User-Agent"],
-    ];
+  const args = [
+    url,
+    "--dump-json",
+    "--no-playlist",
+    "--no-warnings",
+    "--user-agent",
+    HEADERS["User-Agent"],
+  ];
 
-    const ytdlp = spawn(YTDLP_PATH, args);
-    let stdout = "";
-    let stderr = "";
+  const info = await ytDlpWrap.getVideoInfo(args);
 
-    ytdlp.stdout.on("data", (d) => (stdout += d));
-    ytdlp.stderr.on("data", (d) => (stderr += d));
+  const formats = (info.formats || [])
+    .filter((f) => f.vcodec !== "none")
+    .map((f) => ({
+      format_id: f.format_id,
+      ext: f.ext,
+      quality: f.format_note || f.height ? `${f.height}p` : "unknown",
+      height: f.height,
+      filesize: f.filesize,
+      url: f.url,
+    }))
+    .sort((a, b) => (b.height || 0) - (a.height || 0));
 
-    ytdlp.on("close", (code) => {
-      if (code === 0) {
-        try {
-          const info = JSON.parse(stdout);
-          const formats = (info.formats || [])
-            .filter((f) => f.vcodec !== "none")
-            .map((f) => ({
-              format_id: f.format_id,
-              ext: f.ext,
-              quality: f.format_note || f.height ? `${f.height}p` : "unknown",
-              height: f.height,
-              filesize: f.filesize,
-              url: f.url,
-            }))
-            .sort((a, b) => (b.height || 0) - (a.height || 0));
-
-          resolve({
-            title: info.title,
-            thumbnail: info.thumbnail,
-            duration: info.duration,
-            uploader: info.uploader,
-            formats: formats.slice(0, 10),
-          });
-        } catch (e) {
-          reject(new Error("Không thể parse thông tin video"));
-        }
-      } else {
-        reject(new Error(`yt-dlp: ${stderr.slice(-300)}`));
-      }
-    });
-
-    ytdlp.on("error", (err) => {
-      if (err.code === "ENOENT")
-        reject(new Error("yt-dlp không tìm thấy. Kiểm tra nixpacks.toml có pip install yt-dlp"));
-      else reject(err);
-    });
-  });
+  return {
+    title: info.title,
+    thumbnail: info.thumbnail,
+    duration: info.duration,
+    uploader: info.uploader,
+    formats: formats.slice(0, 10),
+  };
 }
 
 // Proxy stream (for CORS-blocked videos)
