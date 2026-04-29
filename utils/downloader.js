@@ -4,6 +4,16 @@ const path = require('path');
 const fs = require('fs');
 const { isHLSUrl, isDASHUrl } = require('./analyzer');
 
+// Dùng ffmpeg từ npm package @ffmpeg-installer/ffmpeg (không cần cài hệ thống)
+let FFMPEG_PATH = 'ffmpeg';
+try {
+  const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
+  FFMPEG_PATH = ffmpegInstaller.path;
+  console.log('✅ ffmpeg path:', FFMPEG_PATH);
+} catch (e) {
+  console.warn('⚠️  @ffmpeg-installer/ffmpeg không tìm thấy, dùng system ffmpeg');
+}
+
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
   'Accept': '*/*',
@@ -50,7 +60,7 @@ async function downloadWithFFmpeg(manifestUrl, referer, res, filename = 'video')
       'pipe:1'
     ];
 
-    const ffmpeg = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const ffmpeg = spawn(FFMPEG_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     
     ffmpeg.stdout.pipe(res);
     
@@ -64,7 +74,7 @@ async function downloadWithFFmpeg(manifestUrl, referer, res, filename = 'video')
 
     ffmpeg.on('error', (err) => {
       if (err.code === 'ENOENT') {
-        reject(new Error('FFmpeg không được cài đặt. Vui lòng cài: npm install @ffmpeg-installer/ffmpeg'));
+        reject(new Error('Không thể khởi động ffmpeg: ' + err.message));
       } else {
         reject(err);
       }
