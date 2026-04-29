@@ -1,7 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const path = require("path");
-const { execSync, exec } = require("child_process");
+const { execSync } = require("child_process");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,42 +10,29 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
 
-// Kiểm tra và cài yt-dlp nếu chưa có
-function ensureYtDlp() {
+// Check tools at startup (chỉ log, không cài runtime)
+function checkTools() {
   try {
-    execSync("yt-dlp --version", { stdio: "ignore" });
-    console.log("✅ yt-dlp đã sẵn sàng");
+    const v = execSync("yt-dlp --version", { encoding: "utf8" }).trim();
+    console.log("✅ yt-dlp:", v);
   } catch {
-    console.log("⏳ Đang cài yt-dlp...");
+    console.warn("⚠️  yt-dlp không tìm thấy trong PATH");
+  }
+
+  try {
+    const ffmpegInstaller = require("@ffmpeg-installer/ffmpeg");
+    console.log("✅ ffmpeg path:", ffmpegInstaller.path);
+  } catch {
     try {
-      // Thử pip3 trước
-      execSync(
-        "pip3 install yt-dlp --quiet --break-system-packages 2>/dev/null || pip install yt-dlp --quiet",
-        {
-          stdio: "inherit",
-          timeout: 60000,
-        },
-      );
-      console.log("✅ yt-dlp đã cài xong");
-    } catch (e) {
-      // Fallback: tải binary trực tiếp
-      try {
-        execSync(
-          `curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod +x /usr/local/bin/yt-dlp`,
-          {
-            stdio: "inherit",
-            timeout: 60000,
-          },
-        );
-        console.log("✅ yt-dlp binary đã tải xong");
-      } catch (e2) {
-        console.warn("⚠️  Không cài được yt-dlp:", e2.message);
-      }
+      execSync("ffmpeg -version", { stdio: "ignore" });
+      console.log("✅ ffmpeg: system");
+    } catch {
+      console.warn("⚠️  ffmpeg không tìm thấy");
     }
   }
 }
 
-ensureYtDlp();
+checkTools();
 
 const downloadRouter = require("./routes/download");
 const analyzeRouter = require("./routes/analyze");
